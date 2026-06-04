@@ -128,7 +128,7 @@ else:
                 for t in TOP_10_TICKERS:
                     if t in dados_lote.columns.levels[0]:
                         df_ticker = dados_lote[t].dropna()
-                        resumo_ticker = processar_indicators(df_ticker) if 'processar_indicadores' in globals() else processar_indicadores(df_ticker)
+                        resumo_ticker = processar_indicadores(df_ticker)
                         if resumo_ticker:
                             resumo_ticker["Ativo"] = t.replace(".SA", "")
                             linhas_tabela.append(resumo_ticker)
