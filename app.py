@@ -3,18 +3,18 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 
-# Configuração da página em modo "wide" para melhor aproveitamento do espaço
+# Configuração da página
 st.set_page_config(page_title="Rastreador de Tendências", layout="wide")
 
 st.title("📈 Painel Avançado de Tendências e Divergências")
 
-# 1. DEFINIÇÃO DAS 10 AÇÕES DE MAIOR LIQUIDEZ/VOLUME DA B3
+# Lista das 10 ações
 TOP_10_TICKERS = [
     'PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 
     'MGLU3.SA', 'WEGE3.SA', 'B3SA3.SA', 'GGBR4.SA', 'HAPV3.SA'
 ]
 
-# --- PAINEL LATERAL DE CONFIGURAÇÕES (SIDEBAR) ---
+# --- PAINEL LATERAL ---
 st.sidebar.header("⚙️ Painel de Controle")
 modo = st.sidebar.radio("Selecione o Modo de Análise:", options=["Ação Individual", "Top 10 Maiores Volumes"])
 periodo = st.sidebar.selectbox("Tempo Gráfico:", options=['15m', '60m', '1d'], index=2)
@@ -22,14 +22,16 @@ periodo = st.sidebar.selectbox("Tempo Gráfico:", options=['15m', '60m', '1d'], 
 intervalos_validos = {'15m': '15m', '60m': '1h', '1d': '1d'}
 intervalo_yf = intervalos_validos[periodo]
 
-# --- FUNÇÃO DE PROCESSAMENTO TÉCNICO ---
+# --- FUNÇÃO DE PROCESSAMENTO (COM CORREÇÃO DO YAHOO FINANCE) ---
 def processar_indicadores(ticker_df):
-    """Calcula os indicadores técnicos e retorna um resumo estruturado."""
     if ticker_df.empty or len(ticker_df) < 25:
         return None
         
-    # Forçar cópia para evitar avisos de atribuição
     df_dados = ticker_df.copy()
+    
+    # 🚨 A CORREÇÃO: Achatar colunas duplas (MultiIndex) geradas pelo Yahoo Finance
+    if isinstance(df_dados.columns, pd.MultiIndex):
+        df_dados.columns = df_dados.columns.get_level_values(0)
     
     # Cálculo dos Indicadores
     df_dados.ta.adx(length=14, append=True)
@@ -40,7 +42,6 @@ def processar_indicadores(ticker_df):
     atual = df_dados.iloc[-1]
     anterior = df_dados.iloc[-2]
     
-    # Identificar colunas dinamicamente
     adx_col = [col for col in df_dados.columns if col.startswith('ADX')][0]
     rsi_col = [col for col in df_dados.columns if col.startswith('RSI')][0]
     
@@ -56,7 +57,7 @@ def processar_indicadores(ticker_df):
     else:
         forca = f"{adx_atual:.1f} (Fraca / Lateral)"
         
-    # Análise de Divergências (últimos 10 períodos vs anteriores)
+    # Divergências
     janela_recente = df_dados.iloc[-10:]
     janela_anterior = df_dados.iloc[-20:-10]
     
@@ -84,21 +85,19 @@ def processar_indicadores(ticker_df):
         "Divergência": sinal_divergencia
     }
 
-# --- FLUXO DE EXECUÇÃO DO APLICATIVO ---
-
+# --- FLUXO DA APLICAÇÃO ---
 if modo == "Ação Individual":
     st.subheader("🔍 Análise de Ativo Específico")
-    # Agora o usuário não precisa digitar o .SA
+    
+    # Usuário digita apenas o ticker, sem o .SA
     ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4, VALE3):", value="PETR4").upper()
     
     if st.button("Executar Análise Individual"):
-        
-        # Tratamento inteligente: adiciona o .SA automaticamente se o usuário esquecer
+        # Adiciona o .SA automaticamente nos bastidores
         ticker_busca = ticker_input if ticker_input.endswith(".SA") else f"{ticker_input}.SA"
         
         with st.spinner(f"Processando {ticker_busca}..."):
             try:
-                # O download agora usa a variável corrigida
                 dados = yf.download(ticker_busca, period="60d", interval=intervalo_yf, progress=False)
                 if dados.empty:
                     st.error("Ativo não encontrado. Verifique a grafia.")
@@ -114,9 +113,12 @@ if modo == "Ação Individual":
                         
                         st.subheader("Diagnóstico de Estrutura")
                         if "Divergência" in resumo['Divergência']:
-                            st.warning(resumo['Divergência'])
+                            if "Alta" in resumo['Divergência']:
+                                st.success(resumo['Divergência'])
+                            else:
+                                st.warning(resumo['Divergência'])
                         else:
-                            st.info("✅ Estrutura de preço saudável. Sem divergências detectadas no curto prazo.")
+                            st.info("✅ Estrutura de preço saudável. Sem divergências detetadas no curto prazo.")
             except Exception as e:
                 st.error(f"Erro ao processar o ativo: {e}")
 
@@ -127,7 +129,6 @@ else:
     if st.button("Atualizar Grade de Mercado"):
         with st.spinner("Baixando dados em lote do mercado..."):
             try:
-                # Baixa todos os tickers de uma vez só (muito mais rápido)
                 dados_lote = yf.download(TOP_10_TICKERS, period="60d", interval=intervalo_yf, group_by="ticker", progress=False)
                 
                 linhas_tabela = []
@@ -139,14 +140,11 @@ else:
                             resumo_ticker["Ativo"] = t.replace(".SA", "")
                             linhas_tabela.append(resumo_ticker)
                 
-                # Monta a tabela final formatada
                 if linhas_tabela:
                     df_final = pd.DataFrame(linhas_tabela)
-                    # Reorganiza as colunas para melhor leitura técnica
                     df_final = df_final[["Ativo", "Preço (R$)", "Tendência", "Força (ADX)", "IFR (RSI)", "Divergência"]]
                     
                     st.divider()
-                    # Exibe como uma tabela de dados rica e interativa
                     st.dataframe(df_final, use_container_width=True, hide_index=True)
                 else:
                     st.warning("Não foi possível extrair dados dos ativos selecionados.")
