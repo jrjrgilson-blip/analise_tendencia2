@@ -3,37 +3,45 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 
-# Configuração da página
 st.set_page_config(page_title="Rastreador de Tendências", layout="wide")
-
 st.title("📈 Painel Avançado de Tendências e Divergências")
 
-# Lista das 10 ações
-TOP_10_TICKERS = [
-    'PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 
-    'MGLU3.SA', 'WEGE3.SA', 'B3SA3.SA', 'GGBR4.SA', 'HAPV3.SA'
-]
+TOP_10_TICKERS = ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 'MGLU3.SA', 'WEGE3.SA', 'B3SA3.SA', 'GGBR4.SA', 'HAPV3.SA']
 
-# --- PAINEL LATERAL ---
 st.sidebar.header("⚙️ Painel de Controle")
-modo = st.sidebar.radio("Selecione o Modo de Análise:", options=["Ação Individual", "Top 10 Maiores Volumes"])
-periodo = st.sidebar.selectbox("Tempo Gráfico:", options=['15m', '60m', '1d'], index=2)
+modo = st.sidebar.radio("Selecione o Modo:", options=["Ação Individual", "Top 10 Maiores Volumes"])
+periodo = st.sidebar.selectbox("Tempo Gráfico Principal:", options=['15m', '60m', '1d'], index=2)
 
 intervalos_validos = {'15m': '15m', '60m': '1h', '1d': '1d'}
 intervalo_yf = intervalos_validos[periodo]
 
-# --- FUNÇÃO DE PROCESSAMENTO (COM CORREÇÃO DO YAHOO FINANCE) ---
+# Removi o cache para obrigar o sistema a procurar o MTF em tempo real sempre
+def carregar_mtf_unico(ticker):
+    """Lê os 4 tempos gráficos de um ativo e devolve as 4 setas de tendência"""
+    intervalos = [("60d", "30m"), ("60d", "60m"), ("6mo", "1d"), ("2y", "1wk")]
+    sinais = []
+    for p, i in intervalos:
+        try:
+            df = yf.download(ticker, period=p, interval=i, progress=False)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            
+            if len(df) < 20:
+                sinais.append("⚪")
+            else:
+                ema9 = df['Close'].ewm(span=9, adjust=False).mean()
+                ema20 = df['Close'].ewm(span=20, adjust=False).mean()
+                sinais.append("🟢" if ema9.iloc[-1] > ema20.iloc[-1] else "🔴")
+        except:
+            sinais.append("⚪")
+    return " ".join(sinais)
+
 def processar_indicadores(ticker_df):
-    if ticker_df.empty or len(ticker_df) < 25:
-        return None
-        
+    if ticker_df.empty or len(ticker_df) < 25: return None
     df_dados = ticker_df.copy()
-    
-    # 🚨 A CORREÇÃO: Achatar colunas duplas (MultiIndex) geradas pelo Yahoo Finance
     if isinstance(df_dados.columns, pd.MultiIndex):
         df_dados.columns = df_dados.columns.get_level_values(0)
     
-    # Cálculo dos Indicadores
     df_dados.ta.adx(length=14, append=True)
     df_dados.ta.rsi(length=14, append=True)
     df_dados.ta.ema(length=9, append=True)
@@ -49,23 +57,15 @@ def processar_indicadores(ticker_df):
     adx_atual = float(atual[adx_col])
     rsi_atual = float(atual[rsi_col])
     
-    # Direção e Força
     direcao = "Alta 🟢" if atual['EMA_9'] > atual['EMA_20'] else "Baixa 🔴"
+    forca = f"{adx_atual:.1f} (Acelera)" if (adx_atual > 25 and adx_atual > anterior[adx_col]) else f"{adx_atual:.1f} (Perde Força)" if adx_atual > 25 else f"{adx_atual:.1f} (Lateral)"
     
-    if adx_atual > 25:
-        forca = f"{adx_atual:.1f} (Acelerando)" if adx_atual > anterior[adx_col] else f"{adx_atual:.1f} (Perdendo Força)"
-    else:
-        forca = f"{adx_atual:.1f} (Fraca / Lateral)"
-        
-    # Divergências
     janela_recente = df_dados.iloc[-10:]
     janela_anterior = df_dados.iloc[-20:-10]
-    
     max_preco_recente = janela_recente['High'].max()
     max_preco_anterior = janela_anterior['High'].max()
     max_rsi_recente = janela_recente[rsi_col].max()
     max_rsi_anterior = janela_anterior[rsi_col].max()
-    
     min_preco_recente = janela_recente['Low'].min()
     min_preco_anterior = janela_anterior['Low'].min()
     min_rsi_recente = janela_recente[rsi_col].min()
@@ -73,81 +73,60 @@ def processar_indicadores(ticker_df):
 
     sinal_divergencia = "Normal"
     if direcao.startswith("Alta") and max_preco_recente > max_preco_anterior and max_rsi_recente < max_rsi_anterior:
-        sinal_divergencia = "⚠️ Divergência de Baixa"
+        sinal_divergencia = "⚠️ Div. Baixa"
     elif direcao.startswith("Baixa") and min_preco_recente < min_preco_anterior and min_rsi_recente > min_rsi_anterior:
-        sinal_divergencia = "🚀 Divergência de Alta"
+        sinal_divergencia = "🚀 Div. Alta"
         
     return {
-        "Preço (R$)": round(fechamento, 2),
+        "Preço": round(fechamento, 2),
         "Tendência": direcao,
         "Força (ADX)": forca,
-        "IFR (RSI)": round(rsi_atual, 1),
+        "IFR": round(rsi_atual, 1),
         "Divergência": sinal_divergencia
     }
 
-# --- FLUXO DA APLICAÇÃO ---
+# --- FLUXO PRINCIPAL ---
 if modo == "Ação Individual":
     st.subheader("🔍 Análise de Ativo Específico")
-    
-    # Usuário digita apenas o ticker, sem o .SA
-    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4, VALE3):", value="PETR4").upper()
+    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4):", value="PETR4").upper()
     
     if st.button("Executar Análise Individual"):
-        # Adiciona o .SA automaticamente nos bastidores
         ticker_busca = ticker_input if ticker_input.endswith(".SA") else f"{ticker_input}.SA"
-        
-        with st.spinner(f"Processando {ticker_busca}..."):
-            try:
-                dados = yf.download(ticker_busca, period="60d", interval=intervalo_yf, progress=False)
-                if dados.empty:
-                    st.error("Ativo não encontrado. Verifique a grafia.")
-                else:
-                    resumo = processar_indicadores(dados)
-                    if resumo:
-                        st.divider()
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Preço Atual", f"R$ {resumo['Preço (R$)']:.2f}")
-                        col2.metric("Tendência", resumo['Tendência'])
-                        col3.metric("Força (ADX)", resumo['Força (ADX)'])
-                        col4.metric("IFR (RSI)", resumo['IFR (RSI)'])
-                        
-                        st.subheader("Diagnóstico de Estrutura")
-                        if "Divergência" in resumo['Divergência']:
-                            if "Alta" in resumo['Divergência']:
-                                st.success(resumo['Divergência'])
-                            else:
-                                st.warning(resumo['Divergência'])
-                        else:
-                            st.info("✅ Estrutura de preço saudável. Sem divergências detetadas no curto prazo.")
-            except Exception as e:
-                st.error(f"Erro ao processar o ativo: {e}")
+        with st.spinner("Processando blocos MTF e estruturas..."):
+            dados = yf.download(ticker_busca, period="60d", interval=intervalo_yf, progress=False)
+            if not dados.empty:
+                resumo = processar_indicadores(dados)
+                mtf_sinal = carregar_mtf_unico(ticker_busca)
+                
+                st.divider()
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Preço", f"R$ {resumo['Preço']:.2f}")
+                c2.metric("Tendência", resumo['Tendência'])
+                c3.metric("MTF (30m | 60m | 1D | 1S)", mtf_sinal)
+                c4.metric("Força (ADX)", resumo['Força (ADX)'])
+                c5.metric("IFR", resumo['IFR'])
+                
+                st.info(f"Diagnóstico Estrutural: {resumo['Divergência']}")
 
 else:
-    st.subheader("📊 Screening Otimizado: Top 10 Maiores Volumes da B3")
-    st.write("Abaixo está o mapa de força consolidado para os ativos mais negociados do mercado.")
-    
+    st.subheader("📊 Top 10 B3: Alinhamento de Múltiplos Tempos Gráficos")
     if st.button("Atualizar Grade de Mercado"):
-        with st.spinner("Baixando dados em lote do mercado..."):
-            try:
-                dados_lote = yf.download(TOP_10_TICKERS, period="60d", interval=intervalo_yf, group_by="ticker", progress=False)
-                
-                linhas_tabela = []
-                for t in TOP_10_TICKERS:
-                    if t in dados_lote.columns.levels[0]:
-                        df_ticker = dados_lote[t].dropna()
-                        resumo_ticker = processar_indicadores(df_ticker)
-                        if resumo_ticker:
-                            resumo_ticker["Ativo"] = t.replace(".SA", "")
-                            linhas_tabela.append(resumo_ticker)
-                
-                if linhas_tabela:
-                    df_final = pd.DataFrame(linhas_tabela)
-                    df_final = df_final[["Ativo", "Preço (R$)", "Tendência", "Força (ADX)", "IFR (RSI)", "Divergência"]]
-                    
-                    st.divider()
-                    st.dataframe(df_final, use_container_width=True, hide_index=True)
-                else:
-                    st.warning("Não foi possível extrair dados dos ativos selecionados.")
-                    
-            except Exception as e:
-                st.error(f"Erro ao baixar lote de dados: {e}")
+        # Mensagem de espera, pois ler 10 ações em 4 tempos leva cerca de 10-15 segundos
+        with st.spinner("A rastrear 10 ativos em 4 tempos gráficos. Isso leva alguns segundos..."):
+            linhas = []
+            dados_lote = yf.download(TOP_10_TICKERS, period="60d", interval=intervalo_yf, group_by="ticker", progress=False)
+            
+            for t in TOP_10_TICKERS:
+                if t in dados_lote.columns.levels[0]:
+                    df_t = dados_lote[t].dropna()
+                    res = processar_indicadores(df_t)
+                    if res:
+                        res["Ativo"] = t.replace(".SA", "")
+                        res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
+                        linhas.append(res)
+            
+            if linhas:
+                df_final = pd.DataFrame(linhas)
+                # Ordenação rígida forçada aqui:
+                df_final = df_final[["Ativo", "Preço", "Tendência", "MTF (30m | 60m | 1D | 1S)", "Força (ADX)", "IFR", "Divergência"]]
+                st.dataframe(df_final, use_container_width=True, hide_index=True)
