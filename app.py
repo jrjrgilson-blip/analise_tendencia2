@@ -88,12 +88,18 @@ def processar_indicadores(ticker_df):
 
 if modo == "Ação Individual":
     st.subheader("🔍 Análise de Ativo Específico")
-    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4.SA):", value="PETR4.SA").upper()
+    # Agora o usuário não precisa digitar o .SA
+    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4, VALE3):", value="PETR4").upper()
     
     if st.button("Executar Análise Individual"):
-        with st.spinner(f"Processando {ticker_input}..."):
+        
+        # Tratamento inteligente: adiciona o .SA automaticamente se o usuário esquecer
+        ticker_busca = ticker_input if ticker_input.endswith(".SA") else f"{ticker_input}.SA"
+        
+        with st.spinner(f"Processando {ticker_busca}..."):
             try:
-                dados = yf.download(ticker_input, period="60d", interval=intervalo_yf, progress=False)
+                # O download agora usa a variável corrigida
+                dados = yf.download(ticker_busca, period="60d", interval=intervalo_yf, progress=False)
                 if dados.empty:
                     st.error("Ativo não encontrado. Verifique a grafia.")
                 else:
