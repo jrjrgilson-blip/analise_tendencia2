@@ -4,21 +4,22 @@ import pandas as pd
 import pandas_ta as ta
 
 st.set_page_config(page_title="Rastreador de Tendências", layout="wide")
-st.title("📈 Painel Avançado: MTF, Ichimoku e Estruturas")
+st.title("📈 Painel Avançado: MTF, Ichimoku e Oportunidades")
 
+# Listas de Ativos
 TOP_10_TICKERS = ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 'MGLU3.SA', 'WEGE3.SA', 'B3SA3.SA', 'GGBR4.SA', 'HAPV3.SA']
+# Lista expandida para o Radar "caçar" oportunidades
+RADAR_TICKERS = TOP_10_TICKERS + ['ABEV3.SA', 'RENT3.SA', 'EQTL3.SA', 'RADL3.SA', 'SUZB3.SA', 'VIVT3.SA', 'RAIL3.SA', 'CSNA3.SA', 'PRIO3.SA', 'CMIG4.SA', 'JBSS3.SA', 'ELET3.SA']
 
 # --- PAINEL LATERAL ---
 st.sidebar.header("⚙️ Painel de Controle")
-modo = st.sidebar.radio("Selecione o Modo:", options=["Ação Individual", "Top 10 Maiores Volumes"])
+modo = st.sidebar.radio("Selecione o Modo:", options=["Ação Individual", "Top 10 Maiores Volumes", "Radar de Oportunidades (Pullback)"])
 
-# INCLUSÃO DO SEMANAL NA LISTA
 periodo = st.sidebar.selectbox("Tempo Gráfico Principal:", options=['15m', '60m', '1d', '1wk'], index=2)
 
 intervalos_validos = {'15m': '15m', '60m': '1h', '1d': '1d', '1wk': '1wk'}
 intervalo_yf = intervalos_validos[periodo]
 
-# SOLUÇÃO DO CONFLITO: Adaptação dinâmica da janela de tempo baseada no gráfico escolhido
 periodos_download = {'15m': '60d', '60m': '60d', '1d': '1y', '1wk': '2y'}
 periodo_yf = periodos_download[periodo]
 
@@ -108,7 +109,7 @@ def processar_indicadores(ticker_df):
     return {
         "Preço": round(fechamento, 2),
         "Tendência": direcao,
-        "MTF": carregar_mtf_unico(atual.name) if hasattr(atual, 'name') else "",
+        "MTF": "", 
         "Ichimoku": estado_nuvem,
         "Suporte": round(suporte, 2),
         "Resist.": round(resistencia, 2),
@@ -120,15 +121,16 @@ def processar_indicadores(ticker_df):
 # --- FLUXO PRINCIPAL ---
 if modo == "Ação Individual":
     st.subheader("🔍 Análise de Ativo Específico")
-    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4):", value="PETR4").upper()
+    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4, BOVA11):", value="PETR4").upper()
     
     if st.button("Executar Análise Individual"):
-        ticker_busca = ticker_input if ticker_input.endswith(".SA") else f"{ticker_input}.SA"
+        if ticker_input.startswith("^") or "=" in ticker_input:
+            ticker_busca = ticker_input
+        else:
+            ticker_busca = ticker_input if ticker_input.endswith(".SA") else f"{ticker_input}.SA"
+            
         with st.spinner("Processando nuvens, blocos MTF e estruturas..."):
-            
-            # Utilizando a variável dinâmica periodo_yf
             dados = yf.download(ticker_busca, period=periodo_yf, interval=intervalo_yf, progress=False)
-            
             if not dados.empty:
                 resumo = processar_indicadores(dados)
                 mtf_sinal = carregar_mtf_unico(ticker_busca)
@@ -148,13 +150,11 @@ if modo == "Ação Individual":
                 
                 st.info(f"Diagnóstico Estrutural: {resumo['Divergência']}")
 
-else:
+elif modo == "Top 10 Maiores Volumes":
     st.subheader("📊 Top 10 B3: Mapa de Força, Nuvem e Níveis Críticos")
     if st.button("Atualizar Grade de Mercado"):
         with st.spinner("A rastrear limites de nuvem, suportes e estruturas. Aguarde..."):
             linhas = []
-            
-            # Utilizando a variável dinâmica periodo_yf
             dados_lote = yf.download(TOP_10_TICKERS, period=periodo_yf, interval=intervalo_yf, group_by="ticker", progress=False)
             
             for t in TOP_10_TICKERS:
@@ -170,3 +170,31 @@ else:
                 df_final = pd.DataFrame(linhas)
                 df_final = df_final[["Ativo", "Preço", "Ichimoku", "Suporte", "Resist.", "Tendência", "MTF (30m | 60m | 1D | 1S)", "Força (ADX)", "IFR", "Divergência"]]
                 st.dataframe(df_final, use_container_width=True, hide_index=True)
+
+elif modo == "Radar de Oportunidades (Pullback)":
+    st.subheader("🎯 Radar Sniper: Caçador de Pullbacks")
+    st.write("Filtro ativo: Tendência de Alta + Preço Acima da Nuvem + IFR Esfriando (< 50).")
+    
+    if st.button("Rodar Scanner de Oportunidades"):
+        with st.spinner(f"A varrer {len(RADAR_TICKERS)} ativos em busca do setup ideal. Pode demorar uns 20 segundos..."):
+            linhas_pullback = []
+            dados_lote = yf.download(RADAR_TICKERS, period=periodo_yf, interval=intervalo_yf, group_by="ticker", progress=False)
+            
+            for t in RADAR_TICKERS:
+                if t in dados_lote.columns.levels[0]:
+                    df_t = dados_lote[t].dropna()
+                    res = processar_indicadores(df_t)
+                    if res:
+                        # 🚨 A MATEMÁTICA DO PULLBACK ACONTECE AQUI 🚨
+                        if res['Tendência'] == "Alta 🟢" and res['Ichimoku'] == "🌤️ Acima" and res['IFR'] <= 50:
+                            res["Ativo"] = t.replace(".SA", "")
+                            res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
+                            linhas_pullback.append(res)
+            
+            if linhas_pullback:
+                df_final = pd.DataFrame(linhas_pullback)
+                df_final = df_final[["Ativo", "Preço", "Ichimoku", "Suporte", "Resist.", "Tendência", "MTF (30m | 60m | 1D | 1S)", "Força (ADX)", "IFR"]]
+                st.success(f"BINGO! Encontrámos {len(linhas_pullback)} ativo(s) alinhado(s) para um possível pullback.")
+                st.dataframe(df_final, use_container_width=True, hide_index=True)
+            else:
+                st.warning("O Radar não encontrou nenhum ativo nas condições ideais de Pullback neste momento. O capital está protegido.")
