@@ -8,12 +8,16 @@ st.title("📈 Painel Avançado: MTF, Ichimoku e Oportunidades")
 
 # Listas de Ativos
 TOP_10_TICKERS = ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 'MGLU3.SA', 'WEGE3.SA', 'B3SA3.SA', 'GGBR4.SA', 'HAPV3.SA']
-# Lista expandida para o Radar "caçar" oportunidades
 RADAR_TICKERS = TOP_10_TICKERS + ['ABEV3.SA', 'RENT3.SA', 'EQTL3.SA', 'RADL3.SA', 'SUZB3.SA', 'VIVT3.SA', 'RAIL3.SA', 'CSNA3.SA', 'PRIO3.SA', 'CMIG4.SA', 'JBSS3.SA', 'ELET3.SA']
 
 # --- PAINEL LATERAL ---
 st.sidebar.header("⚙️ Painel de Controle")
-modo = st.sidebar.radio("Selecione o Modo:", options=["Ação Individual", "Top 10 Maiores Volumes", "Radar de Oportunidades (Pullback)"])
+modo = st.sidebar.radio("Selecione o Modo:", options=[
+    "Ação Individual", 
+    "Top 10 Maiores Volumes", 
+    "Radar de Oportunidades (Pullback)",
+    "Radar de Explosão (Fuga M6x16)" # NOVA ABA AQUI
+])
 
 periodo = st.sidebar.selectbox("Tempo Gráfico Principal:", options=['15m', '60m', '1d', '1wk'], index=2)
 
@@ -49,10 +53,15 @@ def processar_indicadores(ticker_df):
     if isinstance(df_dados.columns, pd.MultiIndex):
         df_dados.columns = df_dados.columns.get_level_values(0)
     
+    # Indicadores Base
     df_dados.ta.adx(length=14, append=True)
     df_dados.ta.rsi(length=14, append=True)
     df_dados.ta.ema(length=9, append=True)
     df_dados.ta.ema(length=20, append=True)
+    
+    # NOVAS MÉDIAS (M6 e M16 para o Radar de Explosão)
+    df_dados.ta.ema(length=6, append=True)
+    df_dados.ta.ema(length=16, append=True)
     
     tenkan = (df_dados['High'].rolling(window=9).max() + df_dados['Low'].rolling(window=9).min()) / 2
     kijun = (df_dados['High'].rolling(window=26).max() + df_dados['Low'].rolling(window=26).min()) / 2
@@ -73,6 +82,18 @@ def processar_indicadores(ticker_df):
     rsi_atual = float(atual[rsi_col])
     span_a_atual = float(senkou_a.iloc[-1])
     span_b_atual = float(senkou_b.iloc[-1])
+    
+    # Lógica do Descolamento (Fuga M6x16)
+    ema6_atual = atual['EMA_6']
+    ema16_atual = atual['EMA_16']
+    
+    sinal_explosao = "Normal"
+    # Condição Alta: M6 acima da M16 E Mínima do candle não toca na M6
+    if ema6_atual > ema16_atual and atual['Low'] > ema6_atual:
+        sinal_explosao = "🚀 Fuga de Alta"
+    # Condição Baixa: M6 abaixo da M16 E Máxima do candle não toca na M6
+    elif ema6_atual < ema16_atual and atual['High'] < ema6_atual:
+        sinal_explosao = "🩸 Queda Livre"
     
     if pd.isna(span_a_atual) or pd.isna(span_b_atual):
         estado_nuvem = "⚪ Sem Histórico"
@@ -115,7 +136,8 @@ def processar_indicadores(ticker_df):
         "Resist.": round(resistencia, 2),
         "Força (ADX)": forca,
         "IFR": round(rsi_atual, 1),
-        "Divergência": sinal_divergencia
+        "Divergência": sinal_divergencia,
+        "Sinal Explosão": sinal_explosao # Novo dado retornado
     }
 
 # --- FLUXO PRINCIPAL ---
@@ -146,7 +168,7 @@ if modo == "Ação Individual":
                 c5.metric("Tendência", resumo['Tendência'])
                 c6.metric("MTF (30m | 60m | 1D | 1S)", mtf_sinal)
                 c7.metric("Força (ADX)", resumo['Força (ADX)'])
-                c8.metric("IFR", resumo['IFR'])
+                c8.metric("Status M6x16", resumo['Sinal Explosão'])
                 
                 st.info(f"Diagnóstico Estrutural: {resumo['Divergência']}")
 
@@ -185,7 +207,6 @@ elif modo == "Radar de Oportunidades (Pullback)":
                     df_t = dados_lote[t].dropna()
                     res = processar_indicadores(df_t)
                     if res:
-                        # 🚨 A MATEMÁTICA DO PULLBACK ACONTECE AQUI 🚨
                         if res['Tendência'] == "Alta 🟢" and res['Ichimoku'] == "🌤️ Acima" and res['IFR'] <= 50:
                             res["Ativo"] = t.replace(".SA", "")
                             res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
@@ -198,3 +219,32 @@ elif modo == "Radar de Oportunidades (Pullback)":
                 st.dataframe(df_final, use_container_width=True, hide_index=True)
             else:
                 st.warning("O Radar não encontrou nenhum ativo nas condições ideais de Pullback neste momento. O capital está protegido.")
+
+elif modo == "Radar de Explosão (Fuga M6x16)":
+    st.subheader("🚀 Radar de Explosão: Padrão de Fuga (M6 x M16)")
+    st.write("Filtro ativo: Identifica ativos onde o preço descolou completamente da Média Móvel de 6 períodos, indicando momentum extremo.")
+    
+    if st.button("Rodar Scanner de Explosão"):
+        with st.spinner(f"A analisar a estrutura de {len(RADAR_TICKERS)} ativos. Aguarde..."):
+            linhas_explosao = []
+            dados_lote = yf.download(RADAR_TICKERS, period=periodo_yf, interval=intervalo_yf, group_by="ticker", progress=False)
+            
+            for t in RADAR_TICKERS:
+                if t in dados_lote.columns.levels[0]:
+                    df_t = dados_lote[t].dropna()
+                    res = processar_indicadores(df_t)
+                    if res:
+                        # 🚨 A MATEMÁTICA DO DESCOLAMENTO ACONTECE AQUI 🚨
+                        if res['Sinal Explosão'] in ["🚀 Fuga de Alta", "🩸 Queda Livre"]:
+                            res["Ativo"] = t.replace(".SA", "")
+                            res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
+                            linhas_explosao.append(res)
+            
+            if linhas_explosao:
+                df_final = pd.DataFrame(linhas_explosao)
+                # Trazemos a coluna 'Sinal Explosão' para destaque
+                df_final = df_final[["Ativo", "Preço", "Sinal Explosão", "MTF (30m | 60m | 1D | 1S)", "Força (ADX)", "Ichimoku", "Suporte", "Resist."]]
+                st.success(f"ALERTA! Detetámos {len(linhas_explosao)} ativo(s) em estado de descolamento absoluto.")
+                st.dataframe(df_final, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhum ativo apresenta o padrão de Fuga M6x16 neste momento. O mercado está a respirar junto às médias.")
