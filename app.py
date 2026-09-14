@@ -9,8 +9,8 @@ st.title("📈 Painel Avançado: MTF, Ichimoku e Oportunidades")
 # O robô agora vai buscar a chave ao cofre fechado do Streamlit (Secrets)
 BRAPI_TOKEN = st.secrets["BRAPI_TOKEN"]
 
-# Ativos atualizados (Sem o .SA) e com os Futuros integrados!
-TOP_10_TICKERS = ['WINFUT', 'WDOFUT', 'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'BBAS3', 'MGLU3', 'WEGE3', 'GGBR4']
+# Ativos atualizados com os contratos vigentes do Mini Índice e Mini Dólar
+TOP_10_TICKERS = ['WINV26', 'WDOV26', 'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'BBAS3', 'MGLU3', 'WEGE3', 'GGBR4']
 RADAR_TICKERS = TOP_10_TICKERS + ['ABEV3', 'RENT3', 'EQTL3', 'RADL3', 'SUZB3', 'VIVT3', 'RAIL3', 'CSNA3', 'PRIO3', 'CMIG4']
 
 # --- PAINEL LATERAL ---
@@ -22,11 +22,12 @@ modo = st.sidebar.radio("Selecione o Modo:", options=[
     "Radar de Explosão (Fuga M6x16)"
 ])
 
-periodo = st.sidebar.selectbox("Tempo Gráfico Principal:", options=['15m', '60m', '1d', '1wk'], index=2)
+# Tempo de 5m adicionado com sucesso. Index=3 mantém o Diário (1d) como padrão inicial
+periodo = st.sidebar.selectbox("Tempo Gráfico Principal:", options=['5m', '15m', '60m', '1d', '1wk'], index=3)
 
 # Tradutor de tempos gráficos para a linguagem da Brapi API
-intervalos_validos = {'15m': '15m', '60m': '1h', '1d': '1d', '1wk': '1wk'}
-periodos_download = {'15m': '3mo', '60m': '3mo', '1d': '1y', '1wk': '2y'}
+intervalos_validos = {'5m': '5m', '15m': '15m', '60m': '1h', '1d': '1d', '1wk': '1wk'}
+periodos_download = {'5m': '1mo', '15m': '3mo', '60m': '3mo', '1d': '1y', '1wk': '2y'}
 
 intervalo_api = intervalos_validos[periodo]
 periodo_api = periodos_download[periodo]
@@ -35,10 +36,8 @@ def baixar_dados_brapi(tickers, range_val, interval_val, token):
     """Novo motor de download focado na API REST da Brapi com Header de Segurança"""
     tickers_str = ",".join(tickers) if isinstance(tickers, list) else tickers
     
-    # A URL agora NÃO tem o token no final (mais seguro)
     url = f"https://brapi.dev/api/quote/{tickers_str}?range={range_val}&interval={interval_val}"
     
-    # O token vai escondido no "envelope" da requisição (Header Authorization)
     headers = {
         "Authorization": f"Bearer {token}"
     }
@@ -170,7 +169,7 @@ def processar_indicadores(ticker_df):
 # --- FLUXO PRINCIPAL ---
 if modo == "Ação Individual":
     st.subheader("🔍 Análise de Ativo Específico")
-    ticker_input = st.text_input("Digite o ticker (ex: PETR4, WINFUT):", value="WINFUT").upper()
+    ticker_input = st.text_input("Digite o ticker (ex: PETR4, WINV26):", value="WINV26").upper()
     
     if st.button("Executar Análise Individual"):
         ticker_busca = ticker_input.replace(".SA", "") # Limpeza de segurança
