@@ -1,14 +1,17 @@
 import streamlit as st
-import yfinance as yf
+import requests
 import pandas as pd
 import pandas_ta as ta
 
 st.set_page_config(page_title="Rastreador de Tendências", layout="wide")
 st.title("📈 Painel Avançado: MTF, Ichimoku e Oportunidades")
 
-# Listas de Ativos
-TOP_10_TICKERS = ['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'BBAS3.SA', 'MGLU3.SA', 'WEGE3.SA', 'B3SA3.SA', 'GGBR4.SA', 'HAPV3.SA']
-RADAR_TICKERS = TOP_10_TICKERS + ['ABEV3.SA', 'RENT3.SA', 'EQTL3.SA', 'RADL3.SA', 'SUZB3.SA', 'VIVT3.SA', 'RAIL3.SA', 'CSNA3.SA', 'PRIO3.SA', 'CMIG4.SA', 'JBSS3.SA', 'ELET3.SA']
+# O robô agora vai buscar a chave ao cofre fechado do Streamlit (Secrets)
+BRAPI_TOKEN = st.secrets["BRAPI_TOKEN"]
+
+# Ativos atualizados (Sem o .SA) e com os Futuros integrados!
+TOP_10_TICKERS = ['WINFUT', 'WDOFUT', 'PETR4', 'VALE3', 'ITUB4', 'BBDC4', 'BBAS3', 'MGLU3', 'WEGE3', 'GGBR4']
+RADAR_TICKERS = TOP_10_TICKERS + ['ABEV3', 'RENT3', 'EQTL3', 'RADL3', 'SUZB3', 'VIVT3', 'RAIL3', 'CSNA3', 'PRIO3', 'CMIG4']
 
 # --- PAINEL LATERAL ---
 st.sidebar.header("⚙️ Painel de Controle")
@@ -16,27 +19,59 @@ modo = st.sidebar.radio("Selecione o Modo:", options=[
     "Ação Individual", 
     "Top 10 Maiores Volumes", 
     "Radar de Oportunidades (Pullback)",
-    "Radar de Explosão (Fuga M6x16)" # NOVA ABA AQUI
+    "Radar de Explosão (Fuga M6x16)"
 ])
 
 periodo = st.sidebar.selectbox("Tempo Gráfico Principal:", options=['15m', '60m', '1d', '1wk'], index=2)
 
+# Tradutor de tempos gráficos para a linguagem da Brapi API
 intervalos_validos = {'15m': '15m', '60m': '1h', '1d': '1d', '1wk': '1wk'}
-intervalo_yf = intervalos_validos[periodo]
+periodos_download = {'15m': '3mo', '60m': '3mo', '1d': '1y', '1wk': '2y'}
 
-periodos_download = {'15m': '60d', '60m': '60d', '1d': '1y', '1wk': '2y'}
-periodo_yf = periodos_download[periodo]
+intervalo_api = intervalos_validos[periodo]
+periodo_api = periodos_download[periodo]
 
-def carregar_mtf_unico(ticker):
-    intervalos = [("60d", "30m"), ("60d", "60m"), ("6mo", "1d"), ("2y", "1wk")]
+def baixar_dados_brapi(tickers, range_val, interval_val, token):
+    """Novo motor de download focado na API REST da Brapi com Header de Segurança"""
+    tickers_str = ",".join(tickers) if isinstance(tickers, list) else tickers
+    
+    # A URL agora NÃO tem o token no final (mais seguro)
+    url = f"https://brapi.dev/api/quote/{tickers_str}?range={range_val}&interval={interval_val}"
+    
+    # O token vai escondido no "envelope" da requisição (Header Authorization)
+    headers = {
+        "Authorization": f"Bearer {token}"
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers)
+        data = resp.json()
+        dfs = {}
+        
+        if 'results' in data:
+            for result in data['results']:
+                symbol = result.get('symbol')
+                hist = result.get('historicalDataPrice', [])
+                if hist:
+                    df = pd.DataFrame(hist)
+                    df['Date'] = pd.to_datetime(df['date'], unit='s')
+                    df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume'}, inplace=True)
+                    df.set_index('Date', inplace=True)
+                    dfs[symbol] = df
+                    
+        if isinstance(tickers, str):
+            return list(dfs.values())[0] if dfs else pd.DataFrame()
+        return dfs
+    except:
+        return pd.DataFrame() if isinstance(tickers, str) else {}
+
+def carregar_mtf_unico(ticker, token):
+    intervalos = [("1mo", "30m"), ("3mo", "1h"), ("1y", "1d"), ("2y", "1wk")]
     sinais = []
     for p, i in intervalos:
         try:
-            df = yf.download(ticker, period=p, interval=i, progress=False)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            
-            if len(df) < 20:
+            df = baixar_dados_brapi(ticker, p, i, token)
+            if df.empty or len(df) < 20:
                 sinais.append("⚪")
             else:
                 ema9 = df['Close'].ewm(span=9, adjust=False).mean()
@@ -50,16 +85,11 @@ def processar_indicadores(ticker_df):
     if ticker_df.empty or len(ticker_df) < 55: 
         return None
     df_dados = ticker_df.copy()
-    if isinstance(df_dados.columns, pd.MultiIndex):
-        df_dados.columns = df_dados.columns.get_level_values(0)
     
-    # Indicadores Base
     df_dados.ta.adx(length=14, append=True)
     df_dados.ta.rsi(length=14, append=True)
     df_dados.ta.ema(length=9, append=True)
     df_dados.ta.ema(length=20, append=True)
-    
-    # NOVAS MÉDIAS (M6 e M16 para o Radar de Explosão)
     df_dados.ta.ema(length=6, append=True)
     df_dados.ta.ema(length=16, append=True)
     
@@ -83,15 +113,12 @@ def processar_indicadores(ticker_df):
     span_a_atual = float(senkou_a.iloc[-1])
     span_b_atual = float(senkou_b.iloc[-1])
     
-    # Lógica do Descolamento (Fuga M6x16)
     ema6_atual = atual['EMA_6']
     ema16_atual = atual['EMA_16']
     
     sinal_explosao = "Normal"
-    # Condição Alta: M6 acima da M16 E Mínima do candle não toca na M6
     if ema6_atual > ema16_atual and atual['Low'] > ema6_atual:
         sinal_explosao = "🚀 Fuga de Alta"
-    # Condição Baixa: M6 abaixo da M16 E Máxima do candle não toca na M6
     elif ema6_atual < ema16_atual and atual['High'] < ema6_atual:
         sinal_explosao = "🩸 Queda Livre"
     
@@ -137,55 +164,57 @@ def processar_indicadores(ticker_df):
         "Força (ADX)": forca,
         "IFR": round(rsi_atual, 1),
         "Divergência": sinal_divergencia,
-        "Sinal Explosão": sinal_explosao # Novo dado retornado
+        "Sinal Explosão": sinal_explosao 
     }
 
 # --- FLUXO PRINCIPAL ---
 if modo == "Ação Individual":
     st.subheader("🔍 Análise de Ativo Específico")
-    ticker_input = st.text_input("Digite o ticker do ativo (ex: PETR4, BOVA11):", value="PETR4").upper()
+    ticker_input = st.text_input("Digite o ticker (ex: PETR4, WINFUT):", value="WINFUT").upper()
     
     if st.button("Executar Análise Individual"):
-        if ticker_input.startswith("^") or "=" in ticker_input:
-            ticker_busca = ticker_input
-        else:
-            ticker_busca = ticker_input if ticker_input.endswith(".SA") else f"{ticker_input}.SA"
+        ticker_busca = ticker_input.replace(".SA", "") # Limpeza de segurança
             
-        with st.spinner("Processando nuvens, blocos MTF e estruturas..."):
-            dados = yf.download(ticker_busca, period=periodo_yf, interval=intervalo_yf, progress=False)
-            if not dados.empty:
-                resumo = processar_indicadores(dados)
-                mtf_sinal = carregar_mtf_unico(ticker_busca)
+        with st.spinner("Processando nuvens e estruturas institucionais..."):
+            df = baixar_dados_brapi(ticker_busca, periodo_api, intervalo_api, BRAPI_TOKEN)
+            
+            if not df.empty:
+                resumo = processar_indicadores(df)
+                mtf_sinal = carregar_mtf_unico(ticker_busca, BRAPI_TOKEN)
                 
-                st.divider()
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Preço", f"R$ {resumo['Preço']:.2f}")
-                c2.metric("Nuvem Ichimoku", resumo['Ichimoku'])
-                c3.metric("Suporte", f"R$ {resumo['Suporte']:.2f}")
-                c4.metric("Resistência", f"R$ {resumo['Resist.']:.2f}")
-                
-                c5, c6, c7, c8 = st.columns(4)
-                c5.metric("Tendência", resumo['Tendência'])
-                c6.metric("MTF (30m | 60m | 1D | 1S)", mtf_sinal)
-                c7.metric("Força (ADX)", resumo['Força (ADX)'])
-                c8.metric("Status M6x16", resumo['Sinal Explosão'])
-                
-                st.info(f"Diagnóstico Estrutural: {resumo['Divergência']}")
+                if resumo:
+                    st.divider()
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Preço", f"R$ {resumo['Preço']:.2f}")
+                    c2.metric("Nuvem Ichimoku", resumo['Ichimoku'])
+                    c3.metric("Suporte", f"R$ {resumo['Suporte']:.2f}")
+                    c4.metric("Resistência", f"R$ {resumo['Resist.']:.2f}")
+                    
+                    c5, c6, c7, c8 = st.columns(4)
+                    c5.metric("Tendência", resumo['Tendência'])
+                    c6.metric("MTF (30m | 60m | 1D | 1S)", mtf_sinal)
+                    c7.metric("Força (ADX)", resumo['Força (ADX)'])
+                    c8.metric("Status M6x16", resumo['Sinal Explosão'])
+                    
+                    st.info(f"Diagnóstico Estrutural: {resumo['Divergência']}")
+                else:
+                    st.warning("Dados insuficientes para calcular os indicadores neste tempo gráfico.")
+            else:
+                st.error("Ativo não encontrado ou erro na chave da API.")
 
 elif modo == "Top 10 Maiores Volumes":
     st.subheader("📊 Top 10 B3: Mapa de Força, Nuvem e Níveis Críticos")
     if st.button("Atualizar Grade de Mercado"):
-        with st.spinner("A rastrear limites de nuvem, suportes e estruturas. Aguarde..."):
+        with st.spinner("A rastrear fluxos e derivativos. Aguarde..."):
             linhas = []
-            dados_lote = yf.download(TOP_10_TICKERS, period=periodo_yf, interval=intervalo_yf, group_by="ticker", progress=False)
+            dfs = baixar_dados_brapi(TOP_10_TICKERS, periodo_api, intervalo_api, BRAPI_TOKEN)
             
             for t in TOP_10_TICKERS:
-                if t in dados_lote.columns.levels[0]:
-                    df_t = dados_lote[t].dropna()
-                    res = processar_indicadores(df_t)
+                if t in dfs and not dfs[t].empty:
+                    res = processar_indicadores(dfs[t])
                     if res:
-                        res["Ativo"] = t.replace(".SA", "")
-                        res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
+                        res["Ativo"] = t
+                        res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t, BRAPI_TOKEN)
                         linhas.append(res)
             
             if linhas:
@@ -198,53 +227,47 @@ elif modo == "Radar de Oportunidades (Pullback)":
     st.write("Filtro ativo: Tendência de Alta + Preço Acima da Nuvem + IFR Esfriando (< 50).")
     
     if st.button("Rodar Scanner de Oportunidades"):
-        with st.spinner(f"A varrer {len(RADAR_TICKERS)} ativos em busca do setup ideal. Pode demorar uns 20 segundos..."):
+        with st.spinner(f"A varrer {len(RADAR_TICKERS)} ativos..."):
             linhas_pullback = []
-            dados_lote = yf.download(RADAR_TICKERS, period=periodo_yf, interval=intervalo_yf, group_by="ticker", progress=False)
+            dfs = baixar_dados_brapi(RADAR_TICKERS, periodo_api, intervalo_api, BRAPI_TOKEN)
             
             for t in RADAR_TICKERS:
-                if t in dados_lote.columns.levels[0]:
-                    df_t = dados_lote[t].dropna()
-                    res = processar_indicadores(df_t)
-                    if res:
-                        if res['Tendência'] == "Alta 🟢" and res['Ichimoku'] == "🌤️ Acima" and res['IFR'] <= 50:
-                            res["Ativo"] = t.replace(".SA", "")
-                            res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
-                            linhas_pullback.append(res)
+                if t in dfs and not dfs[t].empty:
+                    res = processar_indicadores(dfs[t])
+                    if res and res['Tendência'] == "Alta 🟢" and res['Ichimoku'] == "🌤️ Acima" and res['IFR'] <= 50:
+                        res["Ativo"] = t
+                        res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t, BRAPI_TOKEN)
+                        linhas_pullback.append(res)
             
             if linhas_pullback:
                 df_final = pd.DataFrame(linhas_pullback)
                 df_final = df_final[["Ativo", "Preço", "Ichimoku", "Suporte", "Resist.", "Tendência", "MTF (30m | 60m | 1D | 1S)", "Força (ADX)", "IFR"]]
-                st.success(f"BINGO! Encontrámos {len(linhas_pullback)} ativo(s) alinhado(s) para um possível pullback.")
+                st.success(f"BINGO! {len(linhas_pullback)} ativo(s) alinhado(s) para um possível pullback.")
                 st.dataframe(df_final, use_container_width=True, hide_index=True)
             else:
-                st.warning("O Radar não encontrou nenhum ativo nas condições ideais de Pullback neste momento. O capital está protegido.")
+                st.warning("Sem ativos nas condições ideais de Pullback neste momento.")
 
 elif modo == "Radar de Explosão (Fuga M6x16)":
     st.subheader("🚀 Radar de Explosão: Padrão de Fuga (M6 x M16)")
-    st.write("Filtro ativo: Identifica ativos onde o preço descolou completamente da Média Móvel de 6 períodos, indicando momentum extremo.")
+    st.write("Filtro ativo: Identifica ativos onde o preço descolou completamente da Média Móvel de 6 períodos.")
     
     if st.button("Rodar Scanner de Explosão"):
-        with st.spinner(f"A analisar a estrutura de {len(RADAR_TICKERS)} ativos. Aguarde..."):
+        with st.spinner(f"A analisar a estrutura de {len(RADAR_TICKERS)} ativos..."):
             linhas_explosao = []
-            dados_lote = yf.download(RADAR_TICKERS, period=periodo_yf, interval=intervalo_yf, group_by="ticker", progress=False)
+            dfs = baixar_dados_brapi(RADAR_TICKERS, periodo_api, intervalo_api, BRAPI_TOKEN)
             
             for t in RADAR_TICKERS:
-                if t in dados_lote.columns.levels[0]:
-                    df_t = dados_lote[t].dropna()
-                    res = processar_indicadores(df_t)
-                    if res:
-                        # 🚨 A MATEMÁTICA DO DESCOLAMENTO ACONTECE AQUI 🚨
-                        if res['Sinal Explosão'] in ["🚀 Fuga de Alta", "🩸 Queda Livre"]:
-                            res["Ativo"] = t.replace(".SA", "")
-                            res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t)
-                            linhas_explosao.append(res)
+                if t in dfs and not dfs[t].empty:
+                    res = processar_indicadores(dfs[t])
+                    if res and res['Sinal Explosão'] in ["🚀 Fuga de Alta", "🩸 Queda Livre"]:
+                        res["Ativo"] = t
+                        res["MTF (30m | 60m | 1D | 1S)"] = carregar_mtf_unico(t, BRAPI_TOKEN)
+                        linhas_explosao.append(res)
             
             if linhas_explosao:
                 df_final = pd.DataFrame(linhas_explosao)
-                # Trazemos a coluna 'Sinal Explosão' para destaque
                 df_final = df_final[["Ativo", "Preço", "Sinal Explosão", "MTF (30m | 60m | 1D | 1S)", "Força (ADX)", "Ichimoku", "Suporte", "Resist."]]
-                st.success(f"ALERTA! Detetámos {len(linhas_explosao)} ativo(s) em estado de descolamento absoluto.")
+                st.success(f"ALERTA! Detetámos {len(linhas_explosao)} ativo(s) em descolamento absoluto.")
                 st.dataframe(df_final, use_container_width=True, hide_index=True)
             else:
-                st.info("Nenhum ativo apresenta o padrão de Fuga M6x16 neste momento. O mercado está a respirar junto às médias.")
+                st.info("Nenhum ativo apresenta o padrão de Fuga neste momento.")
